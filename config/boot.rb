@@ -1,9 +1,8 @@
 # Don't change this file!
 # Configure your app in config/environment.rb and config/environments/*.rb
-
 RAILS_ROOT = "#{File.dirname(__FILE__)}/.." unless defined?(RAILS_ROOT)
 
-module Rails
+module Spree
   class << self
     def boot!
       unless booted?
@@ -13,13 +12,14 @@ module Rails
     end
 
     def booted?
-      defined? Rails::Initializer
+      defined? Spree::Initializer
     end
 
-    def pick_boot
-      (vendor_rails? ? VendorBoot : GemBoot).new
+    def pick_boot   
+      return VendorBoot.new if File.exist?("#{RAILS_ROOT}/vendor/spree")
+      (File.exist?("#{RAILS_ROOT}/lib/spree.rb") ? AppBoot : GemBoot).new
     end
-
+    
     def vendor_rails?
       File.exist?("#{RAILS_ROOT}/vendor/rails")
     end
@@ -33,69 +33,116 @@ module Rails
     end
   end
 
-  class Boot
-    def run
-      load_initializer
-      Rails::Initializer.run(:set_load_path)
+  module RubyGemsLoader
+    def load_rubygems
+      require 'rubygems'
+
+      unless rubygems_version >= '1.3.2'
+        $stderr.puts %(Spree requires RubyGems >= 1.3.2 (you have #{rubygems_version}). Please `gem update --system` and try again.)
+        exit 1
+      end
+
+    rescue LoadError
+      $stderr.puts %(Spree requires RubyGems >= 1.3.2. Please install RubyGems and try again: http://rubygems.rubyforge.org)
+      exit 1
     end
+    
+    def rubygems_version
+      Gem::RubyGemsVersion.nil? ? '0.0' : Gem::RubyGemsVersion
+    end
+  end
+
+  class Boot 
+    include Spree::RubyGemsLoader
+    def run
+      load_rails("2.3.5")  # note: spree requires this specific version of rails (change at your own risk)
+      load_initializer
+      Spree::Initializer.run(:set_load_path)
+    end
+    
+    def load_initializer
+      begin
+        require 'spree'
+        require 'spree/initializer'
+      rescue LoadError => e
+        $stderr.puts %(Spree could not be initialized. #{e})
+        exit 1
+      end
+    end   
+    
+    # since we're hijacking the initializer rails is no longer guaranteed to be available 
+    # (but we need it in the initializer)
+    def load_rails(version)
+      if File.exist?("#{RAILS_ROOT}/vendor/rails")
+        $LOAD_PATH.unshift "#{RAILS_ROOT}/vendor/rails/railties/lib"
+      else
+        load_rubygems
+        begin
+          gem 'rails', version
+        rescue Gem::LoadError => load_error
+          $stderr.puts %(Missing the Rails #{version} gem. Please `gem install -v=#{version} rails`.)
+          exit 1
+        end
+      end
+    end 
   end
 
   class VendorBoot < Boot
     def load_initializer
-      require "#{RAILS_ROOT}/vendor/rails/railties/lib/initializer"
-      Rails::Initializer.run(:install_gem_spec_stubs)
-      Rails::GemDependency.add_frozen_gem_path
+      $LOAD_PATH.unshift "#{RAILS_ROOT}/vendor/spree/lib" 
+      super
+    end
+    
+    def load_error_message
+      "Please verify that vendor/spree contains a complete copy of the Spree sources."
     end
   end
 
+  class AppBoot < Boot
+    def load_initializer
+      $LOAD_PATH.unshift "#{RAILS_ROOT}/lib"
+      super
+    end
+    
+    def load_error_message
+      "Please verify that you have a complete copy of the Spree sources."
+    end
+  end
+  
   class GemBoot < Boot
+
     def load_initializer
       self.class.load_rubygems
-      load_rails_gem
-      require 'initializer'
+      load_spree_gem
+      super
     end
 
-    def load_rails_gem
+    def load_spree_gem
       if version = self.class.gem_version
-        gem 'rails', version
+        gem 'spree', version
       else
-        gem 'rails'
+        gem 'spree'
       end
     rescue Gem::LoadError => load_error
-      $stderr.puts %(Missing the Rails #{version} gem. Please `gem install -v=#{version} rails`, update your RAILS_GEM_VERSION setting in config/environment.rb for the Rails version you do have installed, or comment out RAILS_GEM_VERSION to use the latest version installed.)
+      $stderr.puts %(Missing the Spree #{version} gem. Please `gem install -v=#{version} spree`, update your SPREE_GEM_VERSION setting in config/environment.rb for the Rails version you do have installed, or comment out SPREE_GEM_VERSION to use the latest version installed.)
       exit 1
     end
 
     class << self
-      def rubygems_version
-        Gem::RubyGemsVersion rescue nil
-      end
+      include Spree::RubyGemsLoader      
 
       def gem_version
-        if defined? RAILS_GEM_VERSION
-          RAILS_GEM_VERSION
-        elsif ENV.include?('RAILS_GEM_VERSION')
-          ENV['RAILS_GEM_VERSION']
+        if defined? SPREE_GEM_VERSION
+          SPREE_GEM_VERSION
+        elsif ENV.include?('SPREE_GEM_VERSION')
+          ENV['SPREE_GEM_VERSION']
         else
           parse_gem_version(read_environment_rb)
         end
       end
 
-      def load_rubygems
-        min_version = '1.3.2'
-        require 'rubygems'
-        unless rubygems_version >= min_version
-          $stderr.puts %Q(Rails requires RubyGems >= #{min_version} (you have #{rubygems_version}). Please `gem update --system` and try again.)
-          exit 1
-        end
-
-      rescue LoadError
-        $stderr.puts %Q(Rails requires RubyGems >= #{min_version}. Please install RubyGems and try again: http://rubygems.rubyforge.org)
-        exit 1
-      end
-
       def parse_gem_version(text)
-        $1 if text =~ /^[^#]*RAILS_GEM_VERSION\s*=\s*["']([!~<>=]*\s*[\d.]+)["']/
+        $1 if text =~ /^[^#]*SPREE_GEM_VERSION\s*=\s*["']([!~<>=]*\s*[\d.]+)["']/
       end
 
       private
@@ -107,4 +154,4 @@ module Rails
 end
 
 # All that for this:
-Rails.boot!
+Spree.boot!
